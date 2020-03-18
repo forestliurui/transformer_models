@@ -505,7 +505,7 @@ if __name__ == '__main__':
     for index in range(start_epoch, args.epochs):
         logger.info(f"Training epoch: {index + 1}")
         
-        eval_loss = train(index+1)
+        eval_loss = train(index)
 
         if check_write_log():
             if best_loss is None or eval_loss is None or eval_loss < best_loss*0.99:

@@ -133,7 +133,7 @@ class PretrainingDataCreator:
 
                     # Random Next
                     is_random_next = False
-                    if len(current_chunk) == 1 or random.random() < 0.5:
+                    if self.next_sentence_pred is True and (len(current_chunk) == 1 or random.random() < 0.5):
                         is_random_next = True
                         target_b_length = target_seq_length - len(tokens_a)
 
@@ -178,10 +178,11 @@ class PretrainingDataCreator:
 
 
 class GenericPretrainingDataCreator(PretrainingDataCreator):
-    def __init__(self, path, tokenizer: BertTokenizer,  max_seq_length: int = 512, readin: int = 2000000, dupe_factor: int = 6, small_seq_prob: float = 0.1):
+    def __init__(self, path, tokenizer: BertTokenizer,  max_seq_length: int = 512, readin: int = 2000000, dupe_factor: int = 6, small_seq_prob: float = 0.1, next_sentence_pred=True):
         self.dupe_factor = dupe_factor
         self.max_seq_length = max_seq_length
         self.small_seq_prob = small_seq_prob
+        self.next_sentence_pred = next_sentence_pred
 
         documents = []
         instances = []
