@@ -36,11 +36,11 @@ logging.basicConfig(format='%(asctime)s - %(levelname)s - %(name)s -   %(message
 logger = logging.getLogger(__name__)
 
 
-def parse_data(input_file, output_file, next_sentence_pred=True):
+def parse_data(input_file, output_file, next_sentence_pred=True, max_seq_length=512):
     if not os.path.exists(output_file):
         print(input_file)
         dataset = GenericPretrainingDataCreator(
-            input_file, tokenizer, dupe_factor=9, max_seq_length=512, next_sentence_pred=next_sentence_pred)
+            input_file, tokenizer, dupe_factor=9, max_seq_length=max_seq_length, next_sentence_pred=next_sentence_pred)
         dataset.save(output_file)
         print(f"Completed Pickling: {output_file}")
     else:
@@ -55,6 +55,8 @@ parser.add_argument("--input_dir", type=str, help="This folder contains .txt fil
                                               A blank line represents completion of a document.")
 parser.add_argument("--output_dir", type=str, help="Path to Output Directory.")
 parser.add_argument("--token_file", default="bert-large-uncased", type=str)
+parser.add_argument("--max_seq_length", default=512, type=int,
+                    help="Max sequence length which will affect the position embedding size.")
 parser.add_argument("--no_next_sentence_pred", default=False, action="store_true",
                     help="This flag indicates the whether the dataset will be used for next sentence prediction. If not, each data instance created will always contain two consecutive sentences. ")
 parser.add_argument("--do_lower_case", default=False, action="store_true",
@@ -70,6 +72,7 @@ input_files = []
 output_files = []
 num_processes = 1
 next_sentence_pred = not args.no_next_sentence_pred
+max_seq_length = args.max_seq_length
 
 if args.processes < 0 or args.processes > multiprocessing.cpu_count():
     raise ValueError(
@@ -79,13 +82,18 @@ elif args.processes == 0:  # Use all cores
 else:
     num_processes = args.processes
 
+
+nxt_args = []
+max_args = []
 for filename in os.listdir(args.input_dir):
     input_file = os.path.join(args.input_dir, filename)
     outfilename = "_".join(filename.split('.')[:-1]) + ".bin"
     output_file = os.path.join(args.output_dir, outfilename)
     input_files.append(input_file)
     output_files.append(output_file)
-    parse_data(input_file, output_file, next_sentence_pred)
+    nxt_args.append(next_sentence_pred)
+    max_args.append(max_seq_length)
+    #parse_data(input_file, output_file, next_sentence_pred, max_seq_length)
 
 with Pool(processes=num_processes) as pool:
-    pool.starmap(parse_data, zip(input_files, output_files))
+    pool.starmap(parse_data, zip(input_files, output_files, nxt_args, max_args))
