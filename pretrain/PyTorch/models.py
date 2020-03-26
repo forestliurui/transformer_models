@@ -32,37 +32,30 @@ class ElectraPretrainingLoss(ElectraPreTrainedModel):
         """
         Computing the loss for Electra pretraining 
 
-        Input:
+        Inputs:
         @input_ids: tensor of shape (batch_size, max_seq_len), contains integers indicating the ids of input tokens, usually after masking (id is from [0, vac_size-1])
         @token_type_ids: tensor of shape (batch_size, max_seq_len), contains integers with either 0 or 1, indicating which sentence (first or the second or padding) each token belongs to (0 means the first sentence, 1 means the second sentence, and then 0 at the end means padding)
         @attention_mask: tensor of shape (batch_size, max_seq_len), contains integers with either 0 or 1, indicating padding tokens (1 means real sentence tokens and 0 means padding tokens)
-        @masked_lm_labels: tensor of shape (batch_size, max_seq_len), contains integers, indicating the ids of masked tokens. (-1 means non-masked tokens, any value from [0, vac_size-1] means the true ids of masked tokens) 
+        @masked_lm_labels: tensor of shape (batch_size, max_seq_len), contains integers, indicating the ids of masked tokens. (-1 means non-masked tokens, any value from [0, vocab_size-1] means the true ids of masked tokens) 
         @next_sentence_label: tensor of shape (batch_size, 1), contains either 0 or 1. 
 
         Returns:
-        @total_loss:  
-
+        @total_loss: scalar tensor, represents summation of generator loss (i.e., mlm_loss) and discriminator loss (i.e., disc_loss). 
         """
-        #import pdb;pdb.set_trace()
 
         batch_size, sequence_length = input_ids.shape
 
         #masked_lm_positions = torch.zeros(batch_size).reshape(-1, 1) + torch.arange(sequence_length) 
         masked_lm_positions = torch.arange(sequence_length).unsqueeze(0).expand(batch_size, sequence_length).to(masked_lm_labels.device)
         masked_lm_ids = masked_lm_labels
-        #torch.cuda.synchronize()
-        #print('Done')
-        #import pdb;pdb.set_trace()
 
         # generator
         _, _, _, mlm_logits, _, _, mlm_loss = self.electra(input_ids=input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids, masked_lm_positions=masked_lm_positions, masked_lm_ids=masked_lm_ids)
-        #gen_output = self.electra(input_ids=input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids, masked_lm_positions=masked_lm_positions, masked_lm_ids=masked_lm_ids)
-        #torch.cuda.synchronize()
-        #print('Done')
-        #import pdb;pdb.set_trace()
 
+        # sample fake data from the output of the generator
         fake_data_ids, is_fake_tokens = self._get_fake_data(input_ids, masked_lm_labels, mlm_logits)
 
+        # discriminator
         _, _, _, _, _, disc_loss = self.electra(input_ids=fake_data_ids, attention_mask=attention_mask, token_type_ids=token_type_ids, fake_token_labels=is_fake_tokens)
 
         total_loss = mlm_loss + disc_loss
@@ -74,6 +67,18 @@ class ElectraPretrainingLoss(ElectraPreTrainedModel):
         return total_loss
 
     def _get_fake_data(self, input_ids, masked_lm_labels, mlm_logits):
+        """
+        Sample fake data 
+
+        Inputs:
+        @input_ids: tensor of shape (batch_size, max_seq_len), contains integers indicating the ids of input tokens, usually after masking (id is from [0, vocab_size-1])
+        @masked_lm_labels: tensor of shape (batch_size, max_seq_len), contains integers, indicating the ids of masked tokens. (-1 means non-masked tokens, any value from [0, vocab_size-1] means the true ids of masked tokens)
+        @mlm_logits: tensor of shape (batch_size, max_seq_len, vocab_size), contains unnormalized probality for each token from vocabulary (of size vocab_size) at each location (from 0 to max_seq_len-1) for each input sequence.
+
+        Returns:
+        @fake_data_ids: tensor of shape (batch_size, max_seq_len), contains integers indicating the ids of fake tokens (each id is from [0, vocab_size-1])
+        @is_fake_tokens: tensor of shape (batch_size, max_seq_len), contains either 0 or 1 indicating whether each token is different from the original unmasked input. (1 means different, 0 means the same.)
+        """
         cat_dist = torch.distributions.categorical.Categorical(logits=mlm_logits)
         sampled_ids = cat_dist.sample()
         masked_ids_selector = (masked_lm_labels != -1)
@@ -98,8 +103,6 @@ class BertPretrainingLoss(BertPreTrainedModel):
         sequence_output, pooled_output = self.bert(input_ids, token_type_ids, attention_mask,
                                                    output_all_encoded_layers=False)
         torch.cuda.synchronize()
-        print("Done")
-        import pdb;pdb.set_trace()
         prediction_scores, seq_relationship_score = self.cls(
             sequence_output, pooled_output)
 

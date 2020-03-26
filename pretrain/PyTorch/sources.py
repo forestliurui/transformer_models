@@ -94,7 +94,6 @@ class PretrainingDataCreator:
     def create_training_instance(self, index):
         document = self.documents[index]
 
-        import pdb;pdb.set_trace()
         # Need to add [CLS] + 2*[SEP] tokens
         max_num_tokens = self.max_seq_length - 3
 
@@ -118,7 +117,6 @@ class PretrainingDataCreator:
             current_length += len(segment)
             if i == len(document)-1 or current_length >= target_seq_length:
                 if current_chunk:
-                    import pdb;pdb.set_trace()
                     # `a_end` is how many segments from `current_chunk` go into the `A`
                     # (first) sentence.
                     a_end = 1
@@ -164,11 +162,13 @@ class PretrainingDataCreator:
 
                     truncate_input_sequence(tokens_a, tokens_b, max_num_tokens)
 
-                    assert len(tokens_a) >= 1
-                    assert len(tokens_b) >= 1
+                    #assert len(tokens_a) >= 1
+                    #assert len(tokens_b) >= 1
 
-                    instances.append(TokenInstance(
+                    if len(tokens_a) >= 1 and len(tokens_b) >= 1: 
+                      instances.append(TokenInstance(
                         tokens_a, tokens_b, int(is_random_next)))
+                    #import pdb;pdb.set_trace()
 
                 current_chunk = []
                 current_length = 0

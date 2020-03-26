@@ -360,6 +360,7 @@ if __name__ == '__main__':
 
     # # Extact config file from blob storage
     job_config = BertJobConfiguration(config_file_path=os.path.join(args.config_file_path, config_file))
+    logger.info(job_config.config)
 
     job_name = job_config.get_name()
     # Setting the distributed variables
