@@ -24,6 +24,7 @@ import logging
 import argparse
 import random
 from tqdm import tqdm, trange
+import socket
 
 import numpy as np
 import torch
@@ -35,13 +36,29 @@ from pytorch_pretrained_bert.tokenization import BertTokenizer
 from pytorch_pretrained_bert.modeling import BertForSequenceClassification
 from pytorch_pretrained_bert.optimization import BertAdam
 from pytorch_pretrained_bert.file_utils import PYTORCH_PRETRAINED_BERT_CACHE
-from azureml_bert_util import *
-from azureml.core.run import Run
+#from azureml_bert_util import *
+#from azureml.core.run import Run
+from pretrain.configuration import BertJobConfiguration
+from transformers.modeling_electra import ElectraModel, ElectraConfig
+from pytorch_pretrained_bert.modeling import BertModel, BertConfig
 
-logging.basicConfig(format = '%(asctime)s - %(levelname)s - %(name)s -   %(message)s', 
-                    datefmt = '%m/%d/%Y %H:%M:%S',
-                    level = logging.INFO)
-logger = logging.getLogger(__name__)
+from models import ElectraForSequenceClassification 
+
+import rutils
+
+#logging.basicConfig(format = '%(asctime)s - %(levelname)s - %(name)s -   %(message)s', 
+#                    datefmt = '%m/%d/%Y %H:%M:%S',
+#                    level = logging.INFO)
+#logger = logging.getLogger(__name__)
+
+def warmup_linear(x, warmup=0.002):
+    if x < warmup:
+        return x/warmup
+    return 1.0 - x
+
+
+def adjust_gradient_accumulation_steps(x, initial_steps, target_steps, warmup):
+    return min(max(int(x/warmup*target_steps), initial_steps), target_steps)
 
 
 class InputExample(object):
@@ -101,12 +118,172 @@ class DataProcessor(object):
             return lines
 
 
+class RTEProcessor(DataProcessor):
+    """Processor for the RTE data set (GLUE version)."""
+    def get_train_examples(self, data_dir):
+        """See base class."""
+        #logger.info("LOOKING AT {}".format(os.path.join(data_dir, "train.tsv")))
+        return self._create_examples(
+            self._read_tsv(os.path.join(data_dir, "train.tsv")), "train")
+
+    def get_dev_examples(self, data_dir):
+        """See base class."""
+        return self._create_examples(
+            self._read_tsv(os.path.join(data_dir, "dev.tsv")), "dev")
+
+    def get_labels(self):
+        """See base class."""
+        return ["entailment", "not_entailment"]
+
+    def _create_examples(self, lines, set_type):
+        """Creates examples for the training and dev sets."""
+        examples = []
+        for (i, line) in enumerate(lines):
+            if i == 0:
+                continue
+            guid = "%s-%s" % (set_type, i)
+            text_a = line[1]
+            text_b = line[2]
+            label = line[3]
+            examples.append(
+                InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label))
+        return examples
+
+
+class STSBProcessor(DataProcessor):
+    """Processor for the STS-B data set (GLUE version)."""
+    def get_train_examples(self, data_dir):
+        """See base class."""
+        #logger.info("LOOKING AT {}".format(os.path.join(data_dir, "train.tsv")))
+        return self._create_examples(
+            self._read_tsv(os.path.join(data_dir, "train.tsv")), "train")
+
+    def get_dev_examples(self, data_dir):
+        """See base class."""
+        return self._create_examples(
+            self._read_tsv(os.path.join(data_dir, "dev.tsv")), "dev")
+
+    def get_labels(self):
+        """See base class."""
+        return ["0", "1", "2", "3", "4", "5"]
+
+    def _create_examples(self, lines, set_type):
+        """Creates examples for the training and dev sets."""
+        examples = []
+        for (i, line) in enumerate(lines):
+            if i == 0:
+                continue
+            guid = "%s-%s" % (set_type, i)
+            text_a = line[7]
+            text_b = line[8]
+            label = str(int(float(line[9])))
+            examples.append(
+                InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label))
+        return examples
+
+
+class SST2Processor(DataProcessor):
+    """Processor for the SST-2 data set (GLUE version)."""
+    def get_train_examples(self, data_dir):
+        """See base class."""
+        #logger.info("LOOKING AT {}".format(os.path.join(data_dir, "train.tsv")))
+        return self._create_examples(
+            self._read_tsv(os.path.join(data_dir, "train.tsv")), "train")
+
+    def get_dev_examples(self, data_dir):
+        """See base class."""
+        return self._create_examples(
+            self._read_tsv(os.path.join(data_dir, "dev.tsv")), "dev")
+
+    def get_labels(self):
+        """See base class."""
+        return ["0", "1"]
+
+    def _create_examples(self, lines, set_type):
+        """Creates examples for the training and dev sets."""
+        examples = []
+        for (i, line) in enumerate(lines):
+            if i == 0:
+                continue
+            guid = "%s-%s" % (set_type, i)
+            text_a = line[0]
+            text_b = None
+            label = line[1]
+            examples.append(
+                InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label))
+        return examples
+
+class QNLIProcessor(DataProcessor):
+    """Processor for the QNLI data set (GLUE version)."""
+    def get_train_examples(self, data_dir):
+        """See base class."""
+        #logger.info("LOOKING AT {}".format(os.path.join(data_dir, "train.tsv")))
+        return self._create_examples(
+            self._read_tsv(os.path.join(data_dir, "train.tsv")), "train")
+
+    def get_dev_examples(self, data_dir):
+        """See base class."""
+        return self._create_examples(
+            self._read_tsv(os.path.join(data_dir, "dev.tsv")), "dev")
+
+    def get_labels(self):
+        """See base class."""
+        return ["entailment", "not_entailment"]
+
+    def _create_examples(self, lines, set_type):
+        """Creates examples for the training and dev sets."""
+        examples = []
+        for (i, line) in enumerate(lines):
+            if i == 0:
+                continue
+            guid = "%s-%s" % (set_type, i)
+            text_a = line[1]
+            text_b = line[2]
+            label = line[3]
+            examples.append(
+                InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label))
+        return examples
+
+class QQPProcessor(DataProcessor):
+    """Processor for the QQP data set (GLUE version)."""
+    def get_train_examples(self, data_dir):
+        """See base class."""
+        #print("LOOKING AT {}".format(os.path.join(data_dir, "train.tsv")))
+        return self._create_examples(
+            self._read_tsv(os.path.join(data_dir, "train.tsv")), "train")
+
+    def get_dev_examples(self, data_dir):
+        """See base class."""
+        return self._create_examples(
+            self._read_tsv(os.path.join(data_dir, "dev.tsv")), "dev")
+
+    def get_labels(self):
+        """See base class."""
+        return ["0", "1"]
+
+    def _create_examples(self, lines, set_type):
+        """Creates examples for the training and dev sets."""
+        examples = []
+        for (i, line) in enumerate(lines):
+            if i == 0:
+                continue
+            if len(line) < 6:
+                continue
+            guid = "%s-%s" % (set_type, i)
+            text_a = line[3]
+            text_b = line[4]
+            label = line[5]
+            examples.append(
+                InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label))
+        return examples
+
+
 class MrpcProcessor(DataProcessor):
     """Processor for the MRPC data set (GLUE version)."""
 
     def get_train_examples(self, data_dir):
         """See base class."""
-        logger.info("LOOKING AT {}".format(os.path.join(data_dir, "train.tsv")))
+        #logger.info("LOOKING AT {}".format(os.path.join(data_dir, "train.tsv")))
         return self._create_examples(
             self._read_tsv(os.path.join(data_dir, "train.tsv")), "train")
 
@@ -158,6 +335,7 @@ class MnliProcessor(DataProcessor):
         for (i, line) in enumerate(lines):
             if i == 0:
                 continue
+            #print(len(line), i, line)
             guid = "%s-%s" % (set_type, line[0])
             text_a = line[8]
             text_b = line[9]
@@ -196,7 +374,7 @@ class ColaProcessor(DataProcessor):
         return examples
 
 
-def convert_examples_to_features(examples, label_list, max_seq_length, tokenizer):
+def convert_examples_to_features(examples, label_list, max_seq_length, tokenizer, logger):
     """Loads a data file into a list of `InputBatch`s."""
 
     label_map = {}
@@ -273,16 +451,16 @@ def convert_examples_to_features(examples, label_list, max_seq_length, tokenizer
         assert len(segment_ids) == max_seq_length
 
         label_id = label_map[example.label]
-        if ex_index < 5:
-            logger.info("*** Example ***")
-            logger.info("guid: %s" % (example.guid))
-            logger.info("tokens: %s" % " ".join(
-                    [str(x) for x in tokens]))
-            logger.info("input_ids: %s" % " ".join([str(x) for x in input_ids]))
-            logger.info("input_mask: %s" % " ".join([str(x) for x in input_mask]))
-            logger.info(
-                    "segment_ids: %s" % " ".join([str(x) for x in segment_ids]))
-            logger.info("label: %s (id = %d)" % (example.label, label_id))
+        #if ex_index < 5:
+        #    logger.info("*** Example ***")
+        #    logger.info("guid: %s" % (example.guid))
+        #    logger.info("tokens: %s" % " ".join(
+        #            [str(x) for x in tokens]))
+        #    logger.info("input_ids: %s" % " ".join([str(x) for x in input_ids]))
+        #    logger.info("input_mask: %s" % " ".join([str(x) for x in input_mask]))
+        #    logger.info(
+        #            "segment_ids: %s" % " ".join([str(x) for x in segment_ids]))
+        #    logger.info("label: %s (id = %d)" % (example.label, label_id))
 
         features.append(
                 InputFeatures(input_ids=input_ids,
@@ -346,14 +524,17 @@ def main():
     parser = argparse.ArgumentParser()
 
     ## Required parameters
+    parser.add_argument("--model", default="bert", type=str, required=True,
+                        help="The model used for pretraining. Currently support bert or electra")
+    parser.add_argument("--config_file", "--cf",
+                                help="pointer to the configuration file of the experiment", type=str, required=True)
+    parser.add_argument("--config_file_path", default=None, type=str, required=True,
+                                    help="The blob storage directory where config file is located.")
     parser.add_argument("--data_dir",
                         default=None,
                         type=str,
                         required=True,
                         help="The input data dir. Should contain the .tsv files (or other data files) for the task.")
-    parser.add_argument("--bert_model", default=None, type=str, required=True,
-                        help="Bert pre-trained model selected in the list: bert-base-uncased, "
-                             "bert-large-uncased, bert-base-cased, bert-base-multilingual, bert-base-chinese.")
     parser.add_argument("--task_name",
                         default=None,
                         type=str,
@@ -363,6 +544,10 @@ def main():
                         help="The output directory where the model checkpoints will be written.")
                         
     ## Other parameters
+    parser.add_argument("--checkpoint_file",
+                        default=None,
+                        type=str,
+                        help="The path to checkpoint file which will be used to initializ the model parameters.")
     parser.add_argument("--max_seq_length",
                         default=128,
                         type=int,
@@ -437,35 +622,60 @@ def main():
 
     args = parser.parse_args()
 
-    run = Run.get_context()
+    #run = Run.get_context()
     
     processors = {
         "cola": ColaProcessor,
         "mnli": MnliProcessor,
         "mrpc": MrpcProcessor,
+        "qqp": QQPProcessor,
+        "qnli": QNLIProcessor,
+        "sst2": SST2Processor,
+        "stsb": STSBProcessor,
+        "rte": RTEProcessor,
     }
 
-    comm = DistributedCommunicator(accumulation_step=args.gradient_accumulation_steps)
-    rank = comm.rank
-    local_rank = comm.local_rank
-    world_size = comm.world_size
-    is_master = rank == 0
-    logger.info("world size: {}, local rank: {}, global rank: {}, fp16: {}".format(world_size, local_rank, rank, args.fp16))
 
-    torch.cuda.set_device(local_rank)
-    device = torch.device("cuda", local_rank)
+    #comm = DistributedCommunicator(accumulation_step=args.gradient_accumulation_steps)
+    #rank = comm.rank
+    #local_rank = comm.local_rank
+    #world_size = comm.world_size
+    #is_master = rank == 0
+    local_rank = 0
+    world_size = 1
+    
+    # Prepare logger
+    job_id = rutils.get_current_time()
+    logger = rutils.FileLogging('%s_bert_fine_tune'%(job_id))
+    logger.info("job id: %s"%job_id)
+    logger.info(rutils.parser_args_to_dict(args))
 
-    if os.path.exists(args.output_dir) and os.listdir(args.output_dir):
-        raise ValueError("Output directory () already exists and is not empty.")
-    os.makedirs(args.output_dir, exist_ok=True)
-    output_model_file = os.path.join(args.output_dir, "pytorch_model.bin")
+    
+    
+    #logger.info("world size: {}, local rank: {}, global rank: {}, fp16: {}".format(world_size, local_rank, rank, args.fp16))
+    logger.info("fp16: {}".format(args.fp16))
+
+    #torch.cuda.set_device(local_rank)
+    #device = torch.device("cuda", local_rank)
+    device = torch.device("cuda")
+    hostname = socket.gethostname()
+    n_gpu = torch.cuda.device_count()
+    logger.info("host: {}, device: {}, n_gpu: {}".format(hostname, device, n_gpu))
+
+    # extract config
+    job_config = BertJobConfiguration(config_file_path=os.path.join(args.config_file_path, args.config_file))
+    
+    #if os.path.exists(args.output_dir) and os.listdir(args.output_dir):
+    #    raise ValueError("Output directory () already exists and is not empty.")
+    #os.makedirs(args.output_dir, exist_ok=True)
+    output_model_file = os.path.join(args.output_dir, job_id+ "_pytorch_model_fine_tune.bin")
 
     if args.gradient_accumulation_steps < 1:
         raise ValueError("Invalid gradient_accumulation_steps parameter: {}, should be >= 1".format(
                             args.gradient_accumulation_steps))
 
-    if local_rank == -1:
-        args.train_batch_size = int(args.train_batch_size / args.gradient_accumulation_steps)
+    #if local_rank == -1:
+    #    args.train_batch_size = int(args.train_batch_size / args.gradient_accumulation_steps)
 
     random.seed(args.seed)
     np.random.seed(args.seed)
@@ -476,14 +686,15 @@ def main():
 
     task_name = args.task_name.lower()
 
-    is_master = (local_rank == -1 or rank == 0)
+    #is_master = (local_rank == -1 or rank == 0)
+    is_master = True
     if task_name not in processors:
         raise ValueError("Task not found: %s" % (task_name))
 
     processor = processors[task_name]()
     label_list = processor.get_labels()
 
-    tokenizer = BertTokenizer.from_pretrained(args.bert_model, do_lower_case=args.do_lower_case)
+    tokenizer = BertTokenizer.from_pretrained(job_config.get_token_file_type(), do_lower_case=args.do_lower_case)
 
     train_examples = None
     num_train_steps = None
@@ -491,14 +702,40 @@ def main():
         train_examples = processor.get_train_examples(args.data_dir)
         num_train_steps = int(
             len(train_examples) / args.train_batch_size / args.gradient_accumulation_steps * args.num_train_epochs)
+    num_labels = len(processor.get_labels())
 
     # Prepare model
-    model = BertForSequenceClassification.from_pretrained(args.bert_model, 
-                cache_dir=PYTORCH_PRETRAINED_BERT_CACHE / 'distributed_{}'.format(local_rank))
+    model_name = args.model
+    model_config = job_config.get_model_config()
+    if model_name == 'bert':
+        config = BertConfig(**model_config)
+        config.vocab_size = len(tokenizer.vocab)
+        model = BertForSequenceClassification(config, num_labels=num_labels)
+    elif model_name == 'electra':
+        config = ElectraConfig(**model_config)
+        config.vocab_size = len(tokenizer.vocab)
+        model = ElectraForSequenceClassification(config, num_labels=num_labels)
+
+    #model = BertForSequenceClassification.from_pretrained(args.bert_model, 
+    #            cache_dir=PYTORCH_PRETRAINED_BERT_CACHE / 'distributed_{}'.format(local_rank), num_labels=num_labels)
+
+    # Load checkpoint if specified
+    #import pdb;pdb.set_trace()
+    if os.path.exists(str(args.checkpoint_file)):
+        state_dict = torch.load(args.checkpoint_file)
+        if model_name == 'bert':
+            model.bert.load_state_dict(state_dict)
+        elif model_name == 'electra':
+            model.electra.load_state_dict(state_dict)
+        logger.info("Set the model parameter from the checkpoint %s"%args.checkpoint_file) 
+
     if args.fp16:
         model.half()
     model.to(device)
-    comm.register_model(model, args.fp16)
+    if n_gpu > 1:
+        model = torch.nn.DataParallel(model)
+
+    #comm.register_model(model, args.fp16)
 
     if args.do_train:
  
@@ -535,15 +772,15 @@ def main():
                             lr=args.learning_rate,
                             warmup=args.warmup_proportion,
                             t_total=t_total)
-        if is_master:
-            run.log('lr', np.float(args.learning_rate))
+        #if is_master:
+        logger.info('lr: {}'.format(np.float(args.learning_rate)))
  
         train_features = convert_examples_to_features(
-            train_examples, label_list, args.max_seq_length, tokenizer)
+            train_examples, label_list, args.max_seq_length, tokenizer, logger)
         logger.info("***** Running training *****")
-        logger.info("  Num examples = %d", len(train_examples))
-        logger.info("  Batch size = %d", args.train_batch_size)
-        logger.info("  Num steps = %d", num_train_steps)
+        logger.info("  Num examples = %d"%(len(train_examples)))
+        logger.info("  Batch size = %d"%(args.train_batch_size))
+        logger.info("  Num steps = %d"%(num_train_steps))
         all_input_ids = torch.tensor([f.input_ids for f in train_features], dtype=torch.long)
         all_input_mask = torch.tensor([f.input_mask for f in train_features], dtype=torch.long)
         all_segment_ids = torch.tensor([f.segment_ids for f in train_features], dtype=torch.long)
@@ -562,30 +799,36 @@ def main():
                 batch = tuple(t.to(device) for t in batch)
                 input_ids, input_mask, segment_ids, label_ids = batch
                 loss = model(input_ids, segment_ids, input_mask, label_ids)
+
+                if n_gpu > 1:
+                    # average loss for multi-gpu
+                    loss = loss.mean()
+
                 loss = loss / args.gradient_accumulation_steps
                 loss.backward()
                 global_step += 1
                 tr_loss += loss.item()
-                if comm.synchronize():
-                    lr_this_step = args.learning_rate * warmup_linear(global_step/t_total, args.warmup_proportion)
-                    for param_group in optimizer.param_groups:
+                #if comm.synchronize():
+                lr_this_step = args.learning_rate * warmup_linear(global_step/t_total, args.warmup_proportion)
+                for param_group in optimizer.param_groups:
                         param_group['lr'] = lr_this_step
-                    optimizer.step()
-                    model.zero_grad()
+                optimizer.step()
+                model.zero_grad()
                 if is_master and (global_step + 1) % args.step_per_log == 0:
-                    run.log('train_loss', np.float(tr_loss / args.step_per_log))
+                    logger.info('train_loss: {}'.format( np.float(tr_loss / args.step_per_log)))
                     tr_loss = 0
         if is_master:
             # Save a trained model
             torch.save(model.state_dict(), output_model_file)
+            logger.info('model checkpoint saved at %s'%output_model_file)
 
     if args.do_eval and is_master:
         eval_examples = processor.get_dev_examples(args.data_dir)
         eval_features = convert_examples_to_features(
-            eval_examples, label_list, args.max_seq_length, tokenizer)
+            eval_examples, label_list, args.max_seq_length, tokenizer, logger)
         logger.info("***** Running evaluation *****")
-        logger.info("  Num examples = %d", len(eval_examples))
-        logger.info("  Batch size = %d", args.eval_batch_size)
+        logger.info("  Num examples = %d"%len(eval_examples))
+        logger.info("  Batch size = %d"%args.eval_batch_size)
         all_input_ids = torch.tensor([f.input_ids for f in eval_features], dtype=torch.long)
         all_input_mask = torch.tensor([f.input_mask for f in eval_features], dtype=torch.long)
         all_segment_ids = torch.tensor([f.segment_ids for f in eval_features], dtype=torch.long)
@@ -619,8 +862,8 @@ def main():
                     'eval_accuracy': eval_accuracy}
         logger.info("***** Eval results *****")
         for key in sorted(result.keys()):
-            logger.info("  %s = %s", key, str(result[key]))
-            run.log(key, str(result[key]))
+            logger.info("  %s = %s"%(key, str(result[key])))
+            #logger.info(key, str(result[key]))
 
 
 if __name__ == "__main__":
