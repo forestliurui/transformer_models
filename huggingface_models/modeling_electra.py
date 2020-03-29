@@ -363,8 +363,6 @@ class ElectraModel(ElectraPreTrainedModel):
             log_probs = torch.log_softmax(hidden_states, -1)
             # label_log_probs = -
             predictions = torch.argmax(log_probs, dim=-1)
-            torch.cuda.synchronize()
-            #import pdb;pdb.set_trace()
 
             loss_fct = nn.CrossEntropyLoss(ignore_index=-1)  # -100 index = padding token
             loss = loss_fct(logits.view(-1, self.config.vocab_size), masked_lm_ids.view(-1))
