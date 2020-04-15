@@ -42,7 +42,7 @@ from pretrain.configuration import BertJobConfiguration
 from transformers.modeling_electra import ElectraModel, ElectraConfig
 from pytorch_pretrained_bert.modeling import BertModel, BertConfig
 
-from models import ElectraForSequenceClassification 
+from models import ElectraForSequenceClassification, ElectraForSequenceRegression, BertForSequenceRegression 
 
 import rutils
 
@@ -164,8 +164,8 @@ class STSBProcessor(DataProcessor):
             self._read_tsv(os.path.join(data_dir, "dev.tsv")), "dev")
 
     def get_labels(self):
-        """See base class."""
-        return ["0", "1", "2", "3", "4", "5"]
+        """See base class. Regression task, return None as label_list"""
+        return None
 
     def _create_examples(self, lines, set_type):
         """Creates examples for the training and dev sets."""
@@ -176,7 +176,7 @@ class STSBProcessor(DataProcessor):
             guid = "%s-%s" % (set_type, i)
             text_a = line[7]
             text_b = line[8]
-            label = str(int(float(line[9])))
+            label = str(float(line[9]))
             examples.append(
                 InputExample(guid=guid, text_a=text_a, text_b=text_b, label=label))
         return examples
@@ -377,8 +377,9 @@ class ColaProcessor(DataProcessor):
 def convert_examples_to_features(examples, label_list, max_seq_length, tokenizer, logger):
     """Loads a data file into a list of `InputBatch`s."""
 
-    label_map = {}
-    for (i, label) in enumerate(label_list):
+    if label_list is not None:
+      label_map = {}
+      for (i, label) in enumerate(label_list):
         label_map[label] = i
 
     features = []
@@ -450,7 +451,10 @@ def convert_examples_to_features(examples, label_list, max_seq_length, tokenizer
         assert len(input_mask) == max_seq_length
         assert len(segment_ids) == max_seq_length
 
-        label_id = label_map[example.label]
+        if label_list is not None:
+          label_id = label_map[example.label]
+        else:
+          label_id = float(example.label)
         #if ex_index < 5:
         #    logger.info("*** Example ***")
         #    logger.info("guid: %s" % (example.guid))
@@ -544,10 +548,19 @@ def main():
                         help="The output directory where the model checkpoints will be written.")
                         
     ## Other parameters
+    parser.add_argument("--jobid",
+                        default=None,
+                        type=str,
+                        help="The optional job id suffix.")
     parser.add_argument("--checkpoint_file",
                         default=None,
                         type=str,
                         help="The path to checkpoint file which will be used to initializ the model parameters.")
+    parser.add_argument("--checkpoint_from_finetune", 
+                        default=False,
+                        action='store_true',
+                        help="whether the checkpoint model is saved from fune-tuning on a auxiliary task."
+                       )
     parser.add_argument("--max_seq_length",
                         default=128,
                         type=int,
@@ -646,6 +659,8 @@ def main():
     
     # Prepare logger
     job_id = rutils.get_current_time()
+    if args.jobid is not None:
+        job_id = job_id + "_" + str(args.jobid)
     logger = rutils.FileLogging('%s_bert_fine_tune'%(job_id))
     logger.info("job id: %s"%job_id)
     logger.info(rutils.parser_args_to_dict(args))
@@ -702,7 +717,6 @@ def main():
         train_examples = processor.get_train_examples(args.data_dir)
         num_train_steps = int(
             len(train_examples) / args.train_batch_size / args.gradient_accumulation_steps * args.num_train_epochs)
-    num_labels = len(processor.get_labels())
 
     # Prepare model
     model_name = args.model
@@ -710,32 +724,43 @@ def main():
     if model_name == 'bert':
         config = BertConfig(**model_config)
         config.vocab_size = len(tokenizer.vocab)
-        model = BertForSequenceClassification(config, num_labels=num_labels)
+        if task_name == "stsb":
+            model = BertForSequenceRegression(config)
+        else:
+            num_labels = len(processor.get_labels())
+            model = BertForSequenceClassification(config, num_labels=num_labels)
     elif model_name == 'electra':
         config = ElectraConfig(**model_config)
         config.vocab_size = len(tokenizer.vocab)
-        model = ElectraForSequenceClassification(config, num_labels=num_labels)
+        if task_name == "stsb":
+            model = ElectraForSequenceRegression(config)
+        else:
+            num_labels = len(processor.get_labels())
+            model = ElectraForSequenceClassification(config, num_labels=num_labels)
+
 
     #model = BertForSequenceClassification.from_pretrained(args.bert_model, 
     #            cache_dir=PYTORCH_PRETRAINED_BERT_CACHE / 'distributed_{}'.format(local_rank), num_labels=num_labels)
 
     # Load checkpoint if specified
-    #import pdb;pdb.set_trace()
     if os.path.exists(str(args.checkpoint_file)):
         state_dict = torch.load(args.checkpoint_file)
+        if args.checkpoint_from_finetune is True:
+            state_dict = {'.'.join(key.split('.')[2:]): val for (key, val) in state_dict.items() if model_name in key}
+            logger.info("Extract the model component in state_dict from a fine-tuned checkpoint.")
         if model_name == 'bert':
             model.bert.load_state_dict(state_dict)
         elif model_name == 'electra':
             model.electra.load_state_dict(state_dict)
         logger.info("Set the model parameter from the checkpoint %s"%args.checkpoint_file) 
 
+
+    #comm.register_model(model, args.fp16)
     if args.fp16:
         model.half()
     model.to(device)
     if n_gpu > 1:
         model = torch.nn.DataParallel(model)
-
-    #comm.register_model(model, args.fp16)
 
     if args.do_train:
  
@@ -784,7 +809,10 @@ def main():
         all_input_ids = torch.tensor([f.input_ids for f in train_features], dtype=torch.long)
         all_input_mask = torch.tensor([f.input_mask for f in train_features], dtype=torch.long)
         all_segment_ids = torch.tensor([f.segment_ids for f in train_features], dtype=torch.long)
-        all_label_ids = torch.tensor([f.label_id for f in train_features], dtype=torch.long)
+        if task_name == "stsb":
+            all_label_ids = torch.tensor([f.label_id for f in train_features], dtype=torch.float)
+        else:
+            all_label_ids = torch.tensor([f.label_id for f in train_features], dtype=torch.long)
         train_data = TensorDataset(all_input_ids, all_input_mask, all_segment_ids, all_label_ids)
         if local_rank != -1 and world_size > 1:
             train_sampler = DistributedSampler(train_data)
@@ -832,7 +860,10 @@ def main():
         all_input_ids = torch.tensor([f.input_ids for f in eval_features], dtype=torch.long)
         all_input_mask = torch.tensor([f.input_mask for f in eval_features], dtype=torch.long)
         all_segment_ids = torch.tensor([f.segment_ids for f in eval_features], dtype=torch.long)
-        all_label_ids = torch.tensor([f.label_id for f in eval_features], dtype=torch.long)
+        if task_name == "stsb":
+            all_label_ids = torch.tensor([f.label_id for f in eval_features], dtype=torch.float)
+        else:
+            all_label_ids = torch.tensor([f.label_id for f in eval_features], dtype=torch.long)
         eval_data = TensorDataset(all_input_ids, all_input_mask, all_segment_ids, all_label_ids)
         # Run prediction for full data
         eval_sampler = SequentialSampler(eval_data)
@@ -840,6 +871,9 @@ def main():
         model.eval()
         eval_loss, eval_accuracy = 0, 0
         nb_eval_steps, nb_eval_examples = 0, 0
+        logits_list = []
+        pred_list = []
+        label_list = []
         for input_ids, input_mask, segment_ids, label_ids in eval_dataloader:
             input_ids = input_ids.to(device)
             input_mask = input_mask.to(device)
@@ -850,6 +884,13 @@ def main():
                 logits = model(input_ids, segment_ids, input_mask)
             logits = logits.detach().cpu().numpy()
             label_ids = label_ids.to('cpu').numpy()
+            if task_name == "stsb":
+                logits_list += list(logits)
+                label_list += list(label_ids)
+            if task_name == "cola":
+                preds = np.argmax(logits, axis=1)
+                pred_list += list(preds)
+                label_list += list(label_ids)
             tmp_eval_accuracy = accuracy(logits, label_ids)
             eval_loss += tmp_eval_loss.mean().item()
             eval_accuracy += tmp_eval_accuracy
@@ -858,8 +899,17 @@ def main():
 
         eval_loss = eval_loss / nb_eval_steps
         eval_accuracy = eval_accuracy / nb_eval_examples
+        if task_name == "stsb":
+            # use spearman correlation as eval metric for STS-B to be consistent with Electra paper
+            from scipy.stats import spearmanr
+            eval_accuracy = spearmanr(label_list, logits_list)[0]
+        if task_name == "cola":
+            from sklearn.metrics import matthews_corrcoef
+            eval_mcc = matthews_corrcoef(label_list, pred_list)
         result = {'eval_loss': eval_loss,
-                    'eval_accuracy': eval_accuracy}
+                  'eval_accuracy': eval_accuracy}
+        if task_name == "cola":
+            result['matthews_corrcoef'] = eval_mcc
         logger.info("***** Eval results *****")
         for key in sorted(result.keys()):
             logger.info("  %s = %s"%(key, str(result[key])))

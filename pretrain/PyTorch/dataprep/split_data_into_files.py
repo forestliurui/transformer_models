@@ -1,8 +1,11 @@
 import os
 from tqdm import tqdm
 
-input_file = '/gpfs/gpfs0/groups/mozafari/ruixliu/data/enwiki/wikipedia.segmented.nltk.txt'
-output_file = '/gpfs/gpfs0/groups/mozafari/ruixliu/data/enwiki/data_shards/wikipedia.segmented.part.'
+#input_file = '/gpfs/gpfs0/groups/mozafari/ruixliu/data/enwiki/wikipedia.segmented.nltk.txt'
+#output_file = '/gpfs/gpfs0/groups/mozafari/ruixliu/data/enwiki/data_shards/wikipedia.segmented.part.'
+
+input_file = '/gpfs/gpfs0/groups/mozafari/ruixliu/data/bookscorpus/bookcorpus.segmented.nltk.txt'
+output_file = '/gpfs/gpfs0/groups/mozafari/ruixliu/data/bookscorpus/data_shards/bookcorpus.segmented.part.'
 
 doc_seperator = "\n"
 
